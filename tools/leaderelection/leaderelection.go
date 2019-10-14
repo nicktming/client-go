@@ -324,26 +324,35 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	}
 
 	// 1. obtain or create the ElectionRecord
+	// 从client端中获得ElectionRecord
 	oldLeaderElectionRecord, err := le.config.Lock.Get()
 	if err != nil {
 		if !errors.IsNotFound(err) {
+			// 失败直接退出
 			klog.Errorf("error retrieving resource lock %v: %v", le.config.Lock.Describe(), err)
 			return false
 		}
+		// 因为没有获取到, 因此创建一个新的进去
 		if err = le.config.Lock.Create(leaderElectionRecord); err != nil {
 			klog.Errorf("error initially creating leader election record: %v", err)
 			return false
 		}
+		// 然后设置observedRecord为刚刚加入进去的leaderElectionRecord
 		le.observedRecord = leaderElectionRecord
 		le.observedTime = le.clock.Now()
 		return true
 	}
 
 	// 2. Record obtained, check the Identity & Time
+	// 从远端获取到record成功存到oldLeaderElectionRecord
+	// 如果oldLeaderElectionRecord与observedRecord 更新observedRecord
+	// 因为observedRecord代表是从远端存在Record
 	if !reflect.DeepEqual(le.observedRecord, *oldLeaderElectionRecord) {
 		le.observedRecord = *oldLeaderElectionRecord
 		le.observedTime = le.clock.Now()
 	}
+	// 如果leader已经被占有并且不是当前自己这个服务, 而且时间还没有到期
+	// 那就直接返回false, 因为已经无法抢占 时间没有过期
 	if len(oldLeaderElectionRecord.HolderIdentity) > 0 &&
 		le.observedTime.Add(le.config.LeaseDuration).After(now.Time) &&
 		!le.IsLeader() {
@@ -354,13 +363,16 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	// 3. We're going to try to update. The leaderElectionRecord is set to it's default
 	// here. Let's correct it before updating.
 	if le.IsLeader() {
+		// 如果当前服务就是以前的占有者
 		leaderElectionRecord.AcquireTime = oldLeaderElectionRecord.AcquireTime
 		leaderElectionRecord.LeaderTransitions = oldLeaderElectionRecord.LeaderTransitions
 	} else {
+		// 如果当前服务不是以前的占有者 LeaderTransitions加1
 		leaderElectionRecord.LeaderTransitions = oldLeaderElectionRecord.LeaderTransitions + 1
 	}
 
 	// update the lock itself
+	// 当前服务占有该资源 成为leader
 	if err = le.config.Lock.Update(leaderElectionRecord); err != nil {
 		klog.Errorf("Failed to update lock: %v", err)
 		return false
