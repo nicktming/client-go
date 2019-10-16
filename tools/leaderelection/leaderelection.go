@@ -174,9 +174,11 @@ type LeaderCallbacks struct {
 
 // LeaderElector is a leader election client.
 type LeaderElector struct {
+	// 用于保存当前应用的一些配置 包括该应用的id等等
 	config LeaderElectionConfig
-	// internal bookkeeping
+	// 远程获取的资源 (不一定自己是leader) 所有想竞争此资源的应用获取的是同一份
 	observedRecord rl.LeaderElectionRecord
+	// 获取的时间
 	observedTime   time.Time
 	// used to implement OnNewLeader(), may lag slightly from the
 	// value observedRecord.HolderIdentity if the transition has
@@ -344,14 +346,14 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	}
 
 	// 2. Record obtained, check the Identity & Time
-	// 从远端获取到record成功存到oldLeaderElectionRecord
-	// 如果oldLeaderElectionRecord与observedRecord 更新observedRecord
+	// 从远端获取到record(资源)成功存到oldLeaderElectionRecord
+	// 如果oldLeaderElectionRecord与observedRecord不相同 更新observedRecord
 	// 因为observedRecord代表是从远端存在Record
 	if !reflect.DeepEqual(le.observedRecord, *oldLeaderElectionRecord) {
 		le.observedRecord = *oldLeaderElectionRecord
 		le.observedTime = le.clock.Now()
 	}
-	// 如果leader已经被占有并且不是当前自己这个服务, 而且时间还没有到期
+	// 如果leader已经被占有并且不是当前自己这个应用, 而且时间还没有到期
 	// 那就直接返回false, 因为已经无法抢占 时间没有过期
 	if len(oldLeaderElectionRecord.HolderIdentity) > 0 &&
 		le.observedTime.Add(le.config.LeaseDuration).After(now.Time) &&
@@ -383,11 +385,14 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 }
 
 func (le *LeaderElector) maybeReportTransition() {
+	// 如果没有变化 则不需要更新
 	if le.observedRecord.HolderIdentity == le.reportedLeader {
 		return
 	}
+	// 更新reportedLeader为最新的leader的id
 	le.reportedLeader = le.observedRecord.HolderIdentity
 	if le.config.Callbacks.OnNewLeader != nil {
+		// 调用当前应用的回调函数OnNewLeader报告新的leader产生
 		go le.config.Callbacks.OnNewLeader(le.reportedLeader)
 	}
 }

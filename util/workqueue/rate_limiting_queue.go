@@ -64,6 +64,7 @@ func (q *rateLimitingType) NumRequeues(item interface{}) int {
 	return q.rateLimiter.NumRequeues(item)
 }
 
+// 删除该item
 func (q *rateLimitingType) Forget(item interface{}) {
 	q.rateLimiter.Forget(item)
 }
