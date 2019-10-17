@@ -42,10 +42,16 @@ type LeaderElectionRecord struct {
 	// attempt to acquire leases with empty identities and will wait for the full lease
 	// interval to expire before attempting to reacquire. This value is set to empty when
 	// a client voluntarily steps down.
+
+	// 持有者的id 也就是leader的id
 	HolderIdentity       string      `json:"holderIdentity"`
+	// 一个租约多长时间
 	LeaseDurationSeconds int         `json:"leaseDurationSeconds"`
+	// 获得leader的时间
 	AcquireTime          metav1.Time `json:"acquireTime"`
+	// 续约的时间
 	RenewTime            metav1.Time `json:"renewTime"`
+	// leader变更的次数
 	LeaderTransitions    int         `json:"leaderTransitions"`
 }
 
@@ -71,22 +77,29 @@ type ResourceLockConfig struct {
 // by the leaderelection code.
 type Interface interface {
 	// Get returns the LeaderElectionRecord
+
+	// 返回当前资源LeaderElectionRecord
 	Get() (*LeaderElectionRecord, error)
 
 	// Create attempts to create a LeaderElectionRecord
+	// 创建一个资源LeaderElectionRecord
 	Create(ler LeaderElectionRecord) error
 
 	// Update will update and existing LeaderElectionRecord
+	// 更新资源
 	Update(ler LeaderElectionRecord) error
 
 	// RecordEvent is used to record events
+	// 记录事件
 	RecordEvent(string)
 
 	// Identity will return the locks Identity
+	// 返回当前该应用的id
 	Identity() string
 
 	// Describe is used to convert details on current resource lock
 	// into a string
+	// 描述信息
 	Describe() string
 }
 

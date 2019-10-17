@@ -1,19 +1,3 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package main
 
 import (
@@ -21,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"k8s.io/client-go/rest"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,7 +15,6 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-	"k8s.io/client-go/transport"
 	"k8s.io/klog"
 )
 
@@ -45,15 +27,15 @@ func main() {
 
 	flag.StringVar(&id, "id", "", "the holder identity name")
 	flag.StringVar(&endpointLockName, "lease-lock-name", "example", "the lease lock resource name")
-	flag.StringVar(&endpointLockNamespace, "lease-lock-namespace", "default", "the lease lock resource namespace")
+	flag.StringVar(&endpointLockNamespace, "lease-lock-namespace", "nicktming", "the lease lock resource namespace")
 	flag.Parse()
 
 	if id == "" {
-		klog.Fatal("unable to get id (missing id flag).")
+		fmt.Printf("unable to get id (missing id flag).\n")
 	}
 
 	config := &rest.Config{
-		Host: "172.21.0.16:8080",
+		Host: "http://172.21.0.16:8080",
 	}
 	client := clientset.NewForConfigOrDie(config)
 
@@ -74,7 +56,7 @@ func main() {
 	defer cancel()
 
 	// use a client that will stop allowing new requests once the context ends
-	config.Wrap(transport.ContextCanceller(ctx, fmt.Errorf("the leader is shutting down")))
+	//	config.Wrap(transport.ContextCanceller(ctx, fmt.Errorf("the leader is shutting down")))
 
 	// listen for interrupts or the Linux SIGTERM signal and cancel
 	// our context, which the leader election code will observe and
@@ -83,7 +65,7 @@ func main() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		log.Printf("Received termination, signaling shutdown")
+		fmt.Printf("Received termination, signaling shutdown\n")
 		cancel()
 	}()
 
@@ -96,7 +78,7 @@ func main() {
 		// loop still running and another process could
 		// get elected before your background loop finished, violating
 		// the stated goal of the lease.
-		ReleaseOnCancel: true,
+		//		ReleaseOnCancel: true,
 		LeaseDuration:   60 * time.Second,
 		RenewDeadline:   15 * time.Second,
 		RetryPeriod:     5 * time.Second,
@@ -104,12 +86,12 @@ func main() {
 			OnStartedLeading: func(ctx context.Context) {
 				// we're notified when we start - this is where you would
 				// usually put your code
-				klog.Infof("%s: leading", id)
+				fmt.Printf("%s: leading\n", id)
 			},
 			OnStoppedLeading: func() {
 				// we can do cleanup here, or after the RunOrDie method
 				// returns
-				klog.Infof("%s: lost", id)
+				fmt.Printf("%s: lost\n", id)
 			},
 			OnNewLeader: func(identity string) {
 				// we're notified when new leader elected
@@ -117,7 +99,7 @@ func main() {
 					// I just got the lock
 					return
 				}
-				klog.Infof("new leader elected: %v", identity)
+				fmt.Printf("new leader elected: %v\n", identity)
 			},
 		},
 	})
@@ -125,10 +107,11 @@ func main() {
 	// because the context is closed, the client should report errors
 	_, err := client.CoreV1().Endpoints(endpointLockNamespace).Get(endpointLockName, metav1.GetOptions{})
 	if err == nil || !strings.Contains(err.Error(), "the leader is shutting down") {
-		log.Fatalf("%s: expected to get an error when trying to make a client call: %v", id, err)
+		fmt.Printf("%s: expected to get an error when trying to make a client call: %v\n", id, err)
+		return
 	}
 
 	// we no longer hold the lease, so perform any cleanup and then
 	// exit
-	log.Printf("%s: done", id)
+	fmt.Printf("%s: done", id)
 }

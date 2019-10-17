@@ -73,6 +73,9 @@ const (
 )
 
 // NewLeaderElector creates a LeaderElector from a LeaderElectionConfig
+
+// leaseDuratioin > renewDeadline > retryPeriod*JitterFactor
+// 同时必须要有OnStartedLeading和OnStoppedLeading方法
 func NewLeaderElector(lec LeaderElectionConfig) (*LeaderElector, error) {
 	if lec.LeaseDuration <= lec.RenewDeadline {
 		return nil, fmt.Errorf("leaseDuration must be greater than renewDeadline")
@@ -125,6 +128,7 @@ type LeaderElectionConfig struct {
 	// long waits in the scenario.
 	//
 	// Core clients default this value to 15 seconds.
+	// 就是一个不是leader的候选者需要等待这些时间可以获得锁
 	LeaseDuration time.Duration
 	// RenewDeadline is the duration that the acting master will retry
 	// refreshing leadership before giving up.
@@ -139,6 +143,8 @@ type LeaderElectionConfig struct {
 
 	// Callbacks are callbacks that are triggered during certain lifecycle
 	// events of the LeaderElector
+
+	// 用户配置的回调函数
 	Callbacks LeaderCallbacks
 
 	// WatchDog is the associated health checker
@@ -150,6 +156,7 @@ type LeaderElectionConfig struct {
 	// ensure all code guarded by this lease has successfully completed
 	// prior to cancelling the context, or you may have two processes
 	// simultaneously acting on the critical path.
+	// 判断在cancel的时候如果当前是leader是否需要释放
 	ReleaseOnCancel bool
 
 	// Name is the name of the resource lock for debugging
@@ -200,12 +207,18 @@ func (le *LeaderElector) Run(ctx context.Context) {
 		runtime.HandleCrash()
 		le.config.Callbacks.OnStoppedLeading()
 	}()
+	// 如果获取失败 那就是ctx signalled done
+	// 不然即使失败, 该client也会一直去尝试获得leader位置
 	if !le.acquire(ctx) {
 		return // ctx signalled done
 	}
+	// 如果获得leadership 以goroutine和回调的形式启动用户自己的逻辑方法OnStartedLeading
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go le.config.Callbacks.OnStartedLeading(ctx)
+	// 一直去续约 这里也是一个循环操作
+	// 如果失去了leadership 该方法才会返回
+	// 该方法返回 整个Run方法就返回了
 	le.renew(ctx)
 }
 
@@ -235,6 +248,9 @@ func (le *LeaderElector) IsLeader() bool {
 
 // acquire loops calling tryAcquireOrRenew and returns true immediately when tryAcquireOrRenew succeeds.
 // Returns false if ctx signals done.
+
+// 一旦获得leadership 立马返回true
+// 返回false的唯一情况是ctx signals done
 func (le *LeaderElector) acquire(ctx context.Context) bool {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -242,12 +258,18 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 	desc := le.config.Lock.Describe()
 	klog.Infof("attempting to acquire leader lease  %v...", desc)
 	wait.JitterUntil(func() {
+		// 尝试获得或者更新资源
 		succeeded = le.tryAcquireOrRenew()
+		// 有可能会产生新的leader
+		// 所以调用maybeReportTransition检查是否需要广播新产生的leader
 		le.maybeReportTransition()
 		if !succeeded {
+			// 如果获得leadership失败 则返回后继续竞争
 			klog.V(4).Infof("failed to acquire lease %v", desc)
 			return
 		}
+		// 自己成为leader
+		// 可以调用cancel方法退出JitterUntil进而从acquire中返回
 		le.config.Lock.RecordEvent("became leader")
 		le.metrics.leaderOn(le.config.Name)
 		klog.Infof("successfully acquired lease %v", desc)
@@ -257,12 +279,17 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 }
 
 // renew loops calling tryAcquireOrRenew and returns immediately when tryAcquireOrRenew fails or ctx signals done.
+
+// RenewDeadline=10s RetryPeriod=2s
 func (le *LeaderElector) renew(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 每隔RetryPeriod会调用 除非cancel()方法被调用才会退出
 	wait.Until(func() {
 		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, le.config.RenewDeadline)
 		defer timeoutCancel()
+		// 每隔2ms调用该方法直到该方法返回true为止
+		// 如果超时了也会退出该方法 并且err中有错误信息
 		err := wait.PollImmediateUntil(le.config.RetryPeriod, func() (bool, error) {
 			done := make(chan bool, 1)
 			go func() {
@@ -278,12 +305,17 @@ func (le *LeaderElector) renew(ctx context.Context) {
 			}
 		}, timeoutCtx.Done())
 
+		// 有可能会产生新的leader 如果有会广播新产生的leader
 		le.maybeReportTransition()
 		desc := le.config.Lock.Describe()
 		if err == nil {
+			// 如果err == nil, 表明上面PollImmediateUntil中返回true了 续约成功 依然处于leader位置
+			// 返回后 继续运行wait.Until的逻辑
 			klog.V(5).Infof("successfully renewed lease %v", desc)
 			return
 		}
+		// err != nil 表明超时了 试的总时间超过了RenewDeadline 失去了leader位置 续约失败
+		// 调用cancel方法退出wait.Until
 		le.config.Lock.RecordEvent("stopped leading")
 		le.metrics.leaderOff(le.config.Name)
 		klog.Infof("failed to renew lease %v: %v", desc, err)
@@ -316,6 +348,9 @@ func (le *LeaderElector) release() bool {
 // tryAcquireOrRenew tries to acquire a leader lease if it is not already acquired,
 // else it tries to renew the lease if it has already been acquired. Returns true
 // on success else returns false.
+
+// 竞争或者更新leadership
+// 成功返回true 失败返回false
 func (le *LeaderElector) tryAcquireOrRenew() bool {
 	now := metav1.Now()
 	leaderElectionRecord := rl.LeaderElectionRecord{
@@ -349,6 +384,9 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	// 从远端获取到record(资源)成功存到oldLeaderElectionRecord
 	// 如果oldLeaderElectionRecord与observedRecord不相同 更新observedRecord
 	// 因为observedRecord代表是从远端存在Record
+
+	// 需要注意的是每个client都在竞争leadership, 而leader一直在续约, leader会更新它的RenewTime字段
+	// 所以一旦leader续约成功 每个non-leader候选者都需要更新其observedTime和observedRecord
 	if !reflect.DeepEqual(le.observedRecord, *oldLeaderElectionRecord) {
 		le.observedRecord = *oldLeaderElectionRecord
 		le.observedTime = le.clock.Now()
@@ -374,7 +412,7 @@ func (le *LeaderElector) tryAcquireOrRenew() bool {
 	}
 
 	// update the lock itself
-	// 当前服务占有该资源 成为leader
+	// 当前client占有该资源 成为leader
 	if err = le.config.Lock.Update(leaderElectionRecord); err != nil {
 		klog.Errorf("Failed to update lock: %v", err)
 		return false

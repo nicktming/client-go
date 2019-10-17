@@ -29,8 +29,11 @@ import (
 type EndpointsLock struct {
 	// EndpointsMeta should contain a Name and a Namespace of an
 	// Endpoints object that the LeaderElector will attempt to lead.
+	// 必须包括namespace和name
 	EndpointsMeta metav1.ObjectMeta
+	// 访问api-server的客户端
 	Client        corev1client.EndpointsGetter
+	// 该EndpointsLock的分布式唯一身份id
 	LockConfig    ResourceLockConfig
 	e             *v1.Endpoints
 }
