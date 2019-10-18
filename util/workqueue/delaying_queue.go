@@ -82,6 +82,7 @@ type delayingType struct {
 // waitFor holds the data to add and the time it should be added
 type waitFor struct {
 	data    t
+	// 该data可以加入queue的时间
 	readyAt time.Time
 	// index in the priority queue (heap)
 	index int
@@ -147,6 +148,7 @@ func (q *delayingType) ShutDown() {
 // AddAfter adds the given item to the work queue after the given delay
 func (q *delayingType) AddAfter(item interface{}, duration time.Duration) {
 	// don't add if we're already shutting down
+	// 如果队列已经关闭 直接返回
 	if q.ShuttingDown() {
 		return
 	}
@@ -154,6 +156,7 @@ func (q *delayingType) AddAfter(item interface{}, duration time.Duration) {
 	q.metrics.retry()
 
 	// immediately add things with no delay
+	// 如果不需要延迟 直接调用iterface(Type)中的Add方法
 	if duration <= 0 {
 		q.Add(item)
 		return
@@ -162,7 +165,9 @@ func (q *delayingType) AddAfter(item interface{}, duration time.Duration) {
 	select {
 	case <-q.stopCh:
 		// unblock if ShutDown() is called
+		// 队列关闭的时候才会进入这里
 	case q.waitingForAddCh <- &waitFor{data: item, readyAt: q.clock.Now().Add(duration)}:
+		// 构造一个waitFor放到waitingForAddCh(一个channel, 缓冲1000)
 	}
 }
 
@@ -193,7 +198,7 @@ func (q *delayingType) waitingLoop() {
 
 		// Add ready entries
 
-		// 将那些已经准备好了的item可以加入到queue中
+		// 将那些已经ready好了的item可以加入到queue中
 		for waitingForQueue.Len() > 0 {
 			entry := waitingForQueue.Peek().(*waitFor)
 			if entry.readyAt.After(now) {
@@ -210,6 +215,7 @@ func (q *delayingType) waitingLoop() {
 		// nextReadyAt启一个channel用于存着下次可以加入queue的时间
 		nextReadyAt := never
 		if waitingForQueue.Len() > 0 {
+			// 优先队列中的第一个肯定是最早ready的
 			entry := waitingForQueue.Peek().(*waitFor)
 			nextReadyAt = q.clock.After(entry.readyAt.Sub(now))
 		}
@@ -218,8 +224,8 @@ func (q *delayingType) waitingLoop() {
 		case <-q.stopCh:
 			return
 
-		// ticker的操作 每隔一定时间会调用
-		// 有可能去增加ready items
+		// ticker的操作 每隔10s会调用
+		// 有可能去增加已经ready items
 		case <-q.heartbeat.C():
 			// continue the loop, which will add ready items
 
@@ -227,7 +233,9 @@ func (q *delayingType) waitingLoop() {
 		case <-nextReadyAt:
 			// continue the loop, which will add ready items
 
+
 		case waitEntry := <-q.waitingForAddCh:
+			// 从AddAfter过来的数据
 			if waitEntry.readyAt.After(q.clock.Now()) {
 				// 如果时间没到 就加入waitingForQueue中
 				// waitingEntryByData用于保存waitEntry.data与waitEntry的关系
@@ -257,7 +265,8 @@ func (q *delayingType) waitingLoop() {
 // insert adds the entry to the priority queue, or updates the readyAt if it already exists in the queue
 func insert(q *waitForPriorityQueue, knownEntries map[t]*waitFor, entry *waitFor) {
 	// if the entry already exists, update the time only if it would cause the item to be queued sooner
-	// 如果在waitingQueue中了 取readyAt最小的那个 为了可以让它早点出queue
+	// 如果已经在waitingQueue中了 取readyAt最小的那个 为了可以让它早点出queue
+	// 就是说增加的item重复了 ready的时间取最早的一个
 	existing, exists := knownEntries[entry.data]
 	if exists {
 		if existing.readyAt.After(entry.readyAt) {

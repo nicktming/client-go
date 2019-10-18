@@ -74,7 +74,7 @@ const defaultUnfinishedWorkUpdatePeriod = 500 * time.Millisecond
 // Type 这个queue的设计:
 // 1. 保存了需要被处理的item
 // 2. 保存了正在被处理的item
-// 3. 保证不能同时有两个相同的item被处理
+// 3. 保证不能同时有两个相同的item正在被处理
 
 // 所以如果一个item正在被处理, 此时又add了一个相同的item, 那不能加入到queue中(把该item暂时加到了dirty)
 // 因为如果在该item没有Done之前出队列了, 就会有两个相同的item在被处理
