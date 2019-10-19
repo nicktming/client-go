@@ -57,9 +57,11 @@ type ThreadSafeStore interface {
 // threadSafeMap implements ThreadSafeStore
 type threadSafeMap struct {
 	lock  sync.RWMutex
+	// 存储着key与obj的对应关系
 	items map[string]interface{}
 
 	// indexers maps a name to an IndexFunc
+	// 存着indexer的名字与它对应的生成index的方法
 	indexers Indexers
 	// indices maps a name to an Index
 	indices Indices
@@ -122,9 +124,11 @@ func (c *threadSafeMap) ListKeys() []string {
 func (c *threadSafeMap) Replace(items map[string]interface{}, resourceVersion string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	// 更新items
 	c.items = items
 
 	// rebuild any index
+	// 重新构建indices
 	c.indices = Indices{}
 	for key, item := range c.items {
 		c.updateIndices(nil, item, key)
@@ -250,20 +254,26 @@ func (c *threadSafeMap) AddIndexers(newIndexers Indexers) error {
 // updateIndices must be called from a function that already has a lock on the cache
 func (c *threadSafeMap) updateIndices(oldObj interface{}, newObj interface{}, key string) {
 	// if we got an old object, we need to remove it before we add it again
+	// 如果以前存在 则删除
 	if oldObj != nil {
 		c.deleteFromIndices(oldObj, key)
 	}
+	// 遍历所有的indexers
 	for name, indexFunc := range c.indexers {
+		// 根据indexFunc生成该对象newObj的键
 		indexValues, err := indexFunc(newObj)
 		if err != nil {
 			panic(fmt.Errorf("unable to calculate an index entry for key %q on index %q: %v", key, name, err))
 		}
+		// 取出当前indexer的结构 是一个map对象
 		index := c.indices[name]
+		// 如果不存在 则创建一个新的
 		if index == nil {
 			index = Index{}
 			c.indices[name] = index
 		}
 
+		// 遍历刚刚生成的键
 		for _, indexValue := range indexValues {
 			set := index[indexValue]
 			if set == nil {

@@ -43,7 +43,10 @@ type Store interface {
 	// Replace will delete the contents of the store, using instead the
 	// given list. Store takes ownership of the list, you should not reference
 	// it after calling this function.
+	// 1. 会删除store里面的内容
+	// 2. 用传进来的list代替以前的内容
 	Replace([]interface{}, string) error
+	// 同步
 	Resync() error
 }
 
@@ -73,6 +76,8 @@ type ExplicitKey string
 //
 // TODO: replace key-as-string with a key-as-struct so that this
 // packing/unpacking won't be necessary.
+
+// 一般情况下都是<namespace>/<name> unless <namespace> is empty, then it's just <name>.
 func MetaNamespaceKeyFunc(obj interface{}) (string, error) {
 	if key, ok := obj.(ExplicitKey); ok {
 		return string(key), nil
