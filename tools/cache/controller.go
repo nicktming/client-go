@@ -31,6 +31,7 @@ type Config struct {
 	// The queue for your objects - has to be a DeltaFIFO due to
 	// assumptions in the implementation. Your Process() function
 	// should accept the output of this Queue's Pop() method.
+	// DeltaFIFO
 	Queue
 
 	// Something that can list and watch your objects.
@@ -40,6 +41,7 @@ type Config struct {
 	Process ProcessFunc
 
 	// The type of your objects.
+	// 该controller针对的类型
 	ObjectType runtime.Object
 
 	// Reprocess everything at least this often.
@@ -49,6 +51,7 @@ type Config struct {
 	// problem, we can change that replacement policy to append new
 	// things to the end of the queue instead of replacing the entire
 	// queue.
+	// resync时间
 	FullResyncPeriod time.Duration
 
 	// ShouldResync, if specified, is invoked when the controller's reflector determines the next
@@ -60,6 +63,7 @@ type Config struct {
 	// TODO: add interface to let you inject a delay/backoff or drop
 	//       the object completely if desired. Pass the object in
 	//       question to this interface as a parameter.
+	// 发生错误的时候是否需要重新进到队列中
 	RetryOnError bool
 }
 
@@ -104,6 +108,7 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 		<-stopCh
 		c.config.Queue.Close()
 	}()
+	// 构造一个reflector
 	r := NewReflector(
 		c.config.ListerWatcher,
 		c.config.ObjectType,
@@ -120,8 +125,10 @@ func (c *controller) Run(stopCh <-chan struct{}) {
 	var wg wait.Group
 	defer wg.Wait()
 
+	// goroutine启动reflector.Run方法
+	// 所有从listwatcher中的数据会存到DeltaFIFO 也就是r.store=c.config.Queue
 	wg.StartWithChannel(stopCh, r.Run)
-
+	// 循环执行processLoop
 	wait.Until(c.processLoop, time.Second, stopCh)
 }
 
@@ -150,13 +157,17 @@ func (c *controller) LastSyncResourceVersion() string {
 // also be helpful.
 func (c *controller) processLoop() {
 	for {
+		// 从DeltaFIFO出队列的逻辑已经分析过了
+		// 从DeltaFIFO出队列执行用户逻辑c.config.Process方法
 		obj, err := c.config.Queue.Pop(PopProcessFunc(c.config.Process))
 		if err != nil {
 			if err == ErrFIFOClosed {
+				// 如果deltaFIFO已经关闭 则返回
 				return
 			}
 			if c.config.RetryOnError {
 				// This is the safe way to re-enqueue.
+				// 如果设置了重试 则重新加入到deltaFIFO中
 				c.config.Queue.AddIfNotPresent(obj)
 			}
 		}

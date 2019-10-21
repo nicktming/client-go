@@ -101,6 +101,9 @@ type DeltaFIFO struct {
 	// We depend on the property that items in the set are in
 	// the queue and vice versa, and that all Deltas in this
 	// map have at least one Delta.
+
+	// items里面存的是key 以及该key对应的pod的变化
+	// queue中存的是key 即出队列的顺序
 	items map[string]Deltas
 	queue []string
 
@@ -112,11 +115,14 @@ type DeltaFIFO struct {
 
 	// keyFunc is used to make the key used for queued item
 	// insertion and retrieval, and should be deterministic.
+
+	// 生成key
 	keyFunc KeyFunc
 
 	// knownObjects list keys that are "known", for the
 	// purpose of figuring out which items have been deleted
 	// when Replace() or Delete() is called.
+	// 说白了 就是本地缓存
 	knownObjects KeyListerGetter
 
 	// Indication the queue is closed.
@@ -148,15 +154,18 @@ func (f *DeltaFIFO) Close() {
 // KeyOf exposes f's keyFunc, but also detects the key of a Deltas object or
 // DeletedFinalStateUnknown objects.
 func (f *DeltaFIFO) KeyOf(obj interface{}) (string, error) {
+	// 如果是Deltas, 也就是该obj的变化, 取最后一个操作的obj
 	if d, ok := obj.(Deltas); ok {
 		if len(d) == 0 {
 			return "", KeyError{obj, ErrZeroLengthDeltasObject}
 		}
 		obj = d.Newest().Object
 	}
+	// 如果该是DeletedFinalStateUnknown类型, 表明在服务器端已经被删除了, 在本地缓存中依然存在
 	if d, ok := obj.(DeletedFinalStateUnknown); ok {
 		return d.Key, nil
 	}
+	// 根据obj生成key
 	return f.keyFunc(obj)
 }
 
@@ -197,9 +206,11 @@ func (f *DeltaFIFO) Delete(obj interface{}) error {
 	defer f.lock.Unlock()
 	f.populated = true
 	if f.knownObjects == nil {
+		// 如果没有设置本地缓存
 		if _, exists := f.items[id]; !exists {
 			// Presumably, this was deleted when a relist happened.
 			// Don't provide a second report of the same deletion.
+			// 如果items中没有该元素, 返回
 			return nil
 		}
 	} else {
@@ -210,6 +221,7 @@ func (f *DeltaFIFO) Delete(obj interface{}) error {
 		_, exists, err := f.knownObjects.GetByKey(id)
 		_, itemsExist := f.items[id]
 		if err == nil && !exists && !itemsExist {
+			// 如果本地缓存和items中都没有, 返回
 			// Presumably, this was deleted when a relist happened.
 			// Don't provide a second report of the same deletion.
 			return nil
@@ -258,6 +270,7 @@ func (f *DeltaFIFO) addIfNotPresent(id string, deltas Deltas) {
 
 // re-listing and watching can deliver the same update multiple times in any
 // order. This will combine the most recent two deltas if they are the same.
+// 目前这里的操作只是去判断最后两个元素是不是都是delete, 如果是则进行合并, 就选其中一个即可
 func dedupDeltas(deltas Deltas) Deltas {
 	n := len(deltas)
 	if n < 2 {
@@ -284,6 +297,11 @@ func isDup(a, b *Delta) *Delta {
 }
 
 // keep the one with the most information if both are deletions.
+// a:倒数第一个  b:倒数第二个
+// 如果倒数第一个和倒数第二个都是Delete
+// 如果倒数第二个是DeletedFinalStateUnknown 返回倒数第一个
+// 如果倒数第二个不是DeletedFinalStateUnknown 返回倒数第二个
+// 选择一个尽量不是DeletedFinalStateUnknown的元素
 func isDeletionDup(a, b *Delta) *Delta {
 	if b.Type != Deleted || a.Type != Deleted {
 		return nil
@@ -297,6 +315,7 @@ func isDeletionDup(a, b *Delta) *Delta {
 
 // willObjectBeDeletedLocked returns true only if the last delta for the
 // given object is Delete. Caller must lock first.
+// 判断该id的最后一次操作是不是Deleted操作
 func (f *DeltaFIFO) willObjectBeDeletedLocked(id string) bool {
 	deltas := f.items[id]
 	return len(deltas) > 0 && deltas[len(deltas)-1].Type == Deleted
@@ -313,6 +332,9 @@ func (f *DeltaFIFO) queueActionLocked(actionType DeltaType, obj interface{}) err
 	// If object is supposed to be deleted (last event is Deleted),
 	// then we should ignore Sync events, because it would result in
 	// recreation of this object.
+	// 如果是Sync并且该元素中最后一次变化是删除操作 就直接返回了
+	// 因为都已经是删除操作了, 在后面加一个Sync就没有必要了 也可以方便用户操作, 用户判断最后一个是不是delete会很方便
+	// Resync和Replace方法中有可能会调用Sync操作
 	if actionType == Sync && f.willObjectBeDeletedLocked(id) {
 		return nil
 	}
@@ -453,6 +475,8 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 	defer f.lock.Unlock()
 	keys := make(sets.String, len(list))
 
+	// 将要加入的list放到keys中
+	// 给list中的每一个item发送Sync操作
 	for _, item := range list {
 		key, err := f.KeyOf(item)
 		if err != nil {
@@ -466,8 +490,10 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 
 	if f.knownObjects == nil {
 		// Do deletion detection against our own list.
+		// 如果没有设置本地缓存
 		queuedDeletions := 0
 		for k, oldItem := range f.items {
+			// 如果新加的list中有 因为已经发送Sync操作了 所以就不需要了
 			if keys.Has(k) {
 				continue
 			}
@@ -476,6 +502,7 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 				deletedObj = n.Object
 			}
 			queuedDeletions++
+			// 不在list中的元素需要被删除
 			if err := f.queueActionLocked(Deleted, DeletedFinalStateUnknown{k, deletedObj}); err != nil {
 				return err
 			}
@@ -492,6 +519,7 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 	}
 
 	// Detect deletions not already in the queue.
+	// 这里可能有人会疑惑为什么不删除f.items里面的元素, 因为f.items里面有的元素会出现在本地缓存中的, 所以直接对本地缓存做操作即可
 	knownKeys := f.knownObjects.ListKeys()
 	queuedDeletions := 0
 	for _, k := range knownKeys {
@@ -552,6 +580,7 @@ func (f *DeltaFIFO) syncKeyLocked(key string) error {
 		klog.Errorf("Unexpected error %v during lookup of key %v, unable to queue object for sync", err, key)
 		return nil
 	} else if !exists {
+		// 如果该元素在本地缓存中不存在 则返回
 		klog.Infof("Key %v does not exist in known objects store, unable to queue object for sync", key)
 		return nil
 	}

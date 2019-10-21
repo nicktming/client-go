@@ -92,9 +92,13 @@ func Pop(queue Queue) interface{} {
 //  * You do not want to periodically reprocess objects.
 // Compare with DeltaFIFO for other use cases.
 type FIFO struct {
+	// 用于并发控制
 	lock sync.RWMutex
 	cond sync.Cond
 	// We depend on the property that items in the set are in the queue and vice versa.
+
+	// queue里面存的是key 并且有出队列的顺序
+	// items里面存的是key与obj之间的对应关系 根据key可以找到obj key->obj
 	items map[string]interface{}
 	queue []string
 
@@ -102,6 +106,7 @@ type FIFO struct {
 	// or Delete/Add/Update was called first.
 	populated bool
 	// initialPopulationCount is the number of items inserted by the first call of Replace()
+	// 第一次调用replace时候 加入到queue中的items的个数
 	initialPopulationCount int
 
 	// keyFunc is used to make the key used for queued item insertion and retrieval, and
@@ -267,25 +272,32 @@ func (f *FIFO) Pop(process PopProcessFunc) (interface{}, error) {
 			// When the queue is empty, invocation of Pop() is blocked until new item is enqueued.
 			// When Close() is called, the f.closed is set and the condition is broadcasted.
 			// Which causes this loop to continue and return from the Pop().
+			// 如果队列已经关闭 则直接返回错误
 			if f.IsClosed() {
 				return nil, ErrFIFOClosed
 			}
-
+			// 等待 有元素了之后会通知
 			f.cond.Wait()
 		}
 		id := f.queue[0]
 		f.queue = f.queue[1:]
+		// 如果initialPopulationCount > 0 表明Replace是比Add/Update/AddIfNotPresent/Delete先调用 然后设置了initialPopulationCount
 		if f.initialPopulationCount > 0 {
 			f.initialPopulationCount--
 		}
 		item, ok := f.items[id]
 		if !ok {
+			// 如果已经删除了 不做处理
 			// Item may have been deleted subsequently.
 			continue
 		}
+		// 从items中删除id
 		delete(f.items, id)
+		// 调用用户自己的处理逻辑
 		err := process(item)
 		if e, ok := err.(ErrRequeue); ok {
+			// 如果用户处理逻辑返回错误是ErrRequeue
+			// 那么表明需要重新加回到queue里面去
 			f.addIfNotPresent(id, item)
 			err = e.Err
 		}
@@ -310,11 +322,17 @@ func (f *FIFO) Replace(list []interface{}, resourceVersion string) error {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 
+	// 主要需要注意这里
+	// f.populated为false的时候才会设置populated和initialPopulationCount
+	// 1. 如果Add/Update/AddIfNotPresent/Delete比Replace先调用 不会进入到这里
+	// 2. 如果Replace比Add/Update/AddIfNotPresent/Delete比Replace先调用 并且是第一次调用 会进入此代码块
+	//    后续再次Replace不会进入该代码块
 	if !f.populated {
 		f.populated = true
 		f.initialPopulationCount = len(items)
 	}
 
+	// 更新f.items和queue
 	f.items = items
 	f.queue = f.queue[:0]
 	for id := range items {
@@ -336,6 +354,7 @@ func (f *FIFO) Resync() error {
 		inQueue.Insert(id)
 	}
 	for id := range f.items {
+		// 如果items里面有 queue里面没有
 		if !inQueue.Has(id) {
 			f.queue = append(f.queue, id)
 		}

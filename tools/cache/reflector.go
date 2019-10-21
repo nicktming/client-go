@@ -44,15 +44,19 @@ import (
 // Reflector watches a specified resource and causes all changes to be reflected in the given store.
 type Reflector struct {
 	// name identifies this reflector. By default it will be a file:line if possible.
+	// 名字
 	name string
 	// metrics tracks basic metric information about the reflector
 	metrics *reflectorMetrics
 
 	// The type of object we expect to place in the store.
+	// 该reflector接收的类型
 	expectedType reflect.Type
 	// The destination to sync up with the watch source
+	// 要存的地方 会是DeltaFIFO
 	store Store
 	// listerWatcher is used to perform lists and watches.
+	// 与api-server打交道的listh和watcher
 	listerWatcher ListerWatcher
 	// period controls timing between one watch ending and
 	// the beginning of the next one.
@@ -64,8 +68,10 @@ type Reflector struct {
 	// lastSyncResourceVersion is the resource version token last
 	// observed when doing a sync with the underlying store
 	// it is thread safe, but not synchronized with the underlying store
+	// 最后一次sync的resourceversion
 	lastSyncResourceVersion string
 	// lastSyncResourceVersionMutex guards read/write access to lastSyncResourceVersion
+	// 用于resourceversion的锁
 	lastSyncResourceVersionMutex sync.RWMutex
 	// WatchListPageSize is the requested chunk size of initial and resync watch lists.
 	// Defaults to pager.PageSize.
@@ -161,6 +167,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 	// Explicitly set "0" as resource version - it's fine for the List()
 	// to be served from cache and potentially be delayed relative to
 	// etcd contents. Reflector framework will catch up via Watch() eventually.
+
+	// ResourceVersion从0开始 可以获得该对象在api-server全部操作的情况
 	options := metav1.ListOptions{ResourceVersion: "0"}
 
 	if err := func() error {
@@ -188,6 +196,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			list, err = pager.List(context.Background(), options)
 			close(listCh)
 		}()
+		// 等待获得上面的list
 		select {
 		case <-stopCh:
 			return nil
@@ -210,6 +219,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			return fmt.Errorf("%s: Unable to understand list result %#v (%v)", r.name, list, err)
 		}
 		initTrace.Step("Objects extracted")
+		// 调用replace函数替换deltaFIFO中的元素
 		if err := r.syncWith(items, resourceVersion); err != nil {
 			return fmt.Errorf("%s: Unable to sync list result: %v", r.name, err)
 		}
@@ -221,6 +231,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		return err
 	}
 
+	// 这里主要是启动一个异步goroutine
+	// 每隔r.resyncPeriod时间调用DeltaFIFO的Resync
 	resyncerrc := make(chan error, 1)
 	cancelCh := make(chan struct{})
 	defer close(cancelCh)
@@ -249,6 +261,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		}
 	}()
 
+	// 根据当前的ResourceVersion生成一个watch
+	// 监控该ResourceVersion后面的一系列变化 然后对应加入到DeltaFIFO中
 	for {
 		// give the stopCh a chance to stop the loop, even in case of continue statements further down on errors
 		select {
@@ -269,6 +283,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			AllowWatchBookmarks: true,
 		}
 
+		// 从当前resourceVersion后面开始监控
 		w, err := r.listerWatcher.Watch(options)
 		if err != nil {
 			switch err {
@@ -289,7 +304,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			}
 			return nil
 		}
-
+		// 调用watchHandler
 		if err := r.watchHandler(w, &resourceVersion, resyncerrc, stopCh); err != nil {
 			if err != errorStopRequested {
 				switch {
@@ -326,16 +341,22 @@ loop:
 	for {
 		select {
 		case <-stopCh:
+			// stopCh被close了 退出watchHandler方法
 			return errorStopRequested
 		case err := <-errc:
+			// DeltaFIFO的Resync出现错误,退出watchHandler方法
 			return err
 		case event, ok := <-w.ResultChan():
 			if !ok {
+				// watch这个channel已经被关闭 跳出loop
 				break loop
 			}
 			if event.Type == watch.Error {
+				// 退出watchHandler方法
 				return apierrs.FromObject(event.Object)
 			}
+			// 得到的对象类型与该reflector监控的类型不一致
+			// 比如该reflector负责的是pod对象 来了一个Service对象
 			if e, a := r.expectedType, reflect.TypeOf(event.Object); e != nil && e != a {
 				utilruntime.HandleError(fmt.Errorf("%s: expected type %v, but watch event object had type %v", r.name, e, a))
 				continue
@@ -345,14 +366,17 @@ loop:
 				utilruntime.HandleError(fmt.Errorf("%s: unable to understand watch event %#v", r.name, event))
 				continue
 			}
+			// 获得新的ResourceVersion
 			newResourceVersion := meta.GetResourceVersion()
 			switch event.Type {
 			case watch.Added:
+				// 往Delta添加一个对象
 				err := r.store.Add(event.Object)
 				if err != nil {
 					utilruntime.HandleError(fmt.Errorf("%s: unable to add watch event object (%#v) to store: %v", r.name, event.Object, err))
 				}
 			case watch.Modified:
+				// 往Delta更新一个对象
 				err := r.store.Update(event.Object)
 				if err != nil {
 					utilruntime.HandleError(fmt.Errorf("%s: unable to update watch event object (%#v) to store: %v", r.name, event.Object, err))
@@ -361,6 +385,7 @@ loop:
 				// TODO: Will any consumers need access to the "last known
 				// state", which is passed in event.Object? If so, may need
 				// to change this.
+				// 往Delta删除一个对象
 				err := r.store.Delete(event.Object)
 				if err != nil {
 					utilruntime.HandleError(fmt.Errorf("%s: unable to delete watch event object (%#v) from store: %v", r.name, event.Object, err))
@@ -370,16 +395,22 @@ loop:
 			default:
 				utilruntime.HandleError(fmt.Errorf("%s: unable to understand watch event %#v", r.name, event))
 			}
+			// 更新ResourceVersion
+			// 处理的event总数加1
 			*resourceVersion = newResourceVersion
 			r.setLastSyncResourceVersion(newResourceVersion)
 			eventCount++
 		}
 	}
 
+	// 当前的watch channel被关闭了
 	watchDuration := r.clock.Since(start)
+	// 如果该watch一个event都没有处理 并且1秒钟都不到
+	// 那有可能问题 所以会返回一个错误 此时退出watchHandler后, 会整个退出ListAndWatch, Run中的util会再次调用ListAndWatch方法.
 	if watchDuration < 1*time.Second && eventCount == 0 {
 		return fmt.Errorf("very short watch: %s: Unexpected watch close - watch lasted less than a second and no items received", r.name)
 	}
+	// 退出watchHandler后 不会整个退出ListAndWatch 在for循环里面再生成一个watch再次调用watchHandler
 	klog.V(4).Infof("%s: Watch close - %v total %v items received", r.name, r.expectedType, eventCount)
 	return nil
 }
