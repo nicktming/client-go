@@ -139,6 +139,7 @@ func (f *sharedInformerFactory) Start(stopCh <-chan struct{}) {
 
 // WaitForCacheSync waits for all started informers' cache were synced.
 func (f *sharedInformerFactory) WaitForCacheSync(stopCh <-chan struct{}) map[reflect.Type]bool {
+	// 收集所有已经启动的informers
 	informers := func() map[reflect.Type]cache.SharedIndexInformer {
 		f.lock.Lock()
 		defer f.lock.Unlock()
@@ -154,6 +155,7 @@ func (f *sharedInformerFactory) WaitForCacheSync(stopCh <-chan struct{}) map[ref
 
 	res := map[reflect.Type]bool{}
 	for informType, informer := range informers {
+		// 等待同步完成
 		res[informType] = cache.WaitForCacheSync(stopCh, informer.HasSynced)
 	}
 	return res
@@ -161,6 +163,10 @@ func (f *sharedInformerFactory) WaitForCacheSync(stopCh <-chan struct{}) map[ref
 
 // InternalInformerFor returns the SharedIndexInformer for obj using an internal
 // client.
+
+// 1. 如果之前已经用newFunc生成过 则直接返回对应的SharedIndexInformer
+// 2. 如果没有生成过 则用newFunc生成并且保存到informers中(map结构) 然后返回
+// 所以同一个sharedInformerFactory返回的podInformer一定是同一个 单例模式
 func (f *sharedInformerFactory) InformerFor(obj runtime.Object, newFunc internalinterfaces.NewInformerFunc) cache.SharedIndexInformer {
 	f.lock.Lock()
 	defer f.lock.Unlock()

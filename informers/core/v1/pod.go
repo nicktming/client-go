@@ -33,11 +33,15 @@ import (
 
 // PodInformer provides access to a shared informer and lister for
 // Pods.
+
+// 该接口有两个方法
+// Informer 生成一个 cache.SharedIndexInformer对象
+// Lister   生成一个 v1.PodLister对象
 type PodInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() v1.PodLister
 }
-
+// 接口的实现类
 type podInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
 	tweakListOptions internalinterfaces.TweakListOptionsFunc
@@ -61,12 +65,14 @@ func NewFilteredPodInformer(client kubernetes.Interface, namespace string, resyn
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
+				// api-server的接口
 				return client.CoreV1().Pods(namespace).List(options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
 					tweakListOptions(&options)
 				}
+				// api-server的接口
 				return client.CoreV1().Pods(namespace).Watch(options)
 			},
 		},

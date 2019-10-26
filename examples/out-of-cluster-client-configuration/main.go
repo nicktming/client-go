@@ -49,10 +49,12 @@ func main() {
 	flag.Parse()
 
 	// use the current context in kubeconfig
+	// 为了构造restconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
 		panic(err.Error())
 	}
+
 
 	// create the clientset
 	clientset, err := kubernetes.NewForConfig(config)
